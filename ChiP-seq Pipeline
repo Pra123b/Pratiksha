@@ -1,0 +1,143 @@
+Step1 : Create Project Folder
+
+mkdir chipseq
+
+Step2: Download SRA files
+prefetch SRR066766
+prefetch SRR066767
+prefetch SRR066768
+prefetch SRR066769
+
+
+Step3: Quality Control
+
+sudo apt install fastqc
+mkdir fastqc_reports
+fastqc *.fastq.gz -o fastqc_reports
+
+Step4: Trimming 
+sudo apt install fastp
+fastp -i SRR066766_1.fastq.gz -o trimmed_SRR066766_1.fastq.gz
+fastp -i SRR066766_2.fastq.gz -o trimmed_SRR066766_2.fastq.gz
+
+fastp -i SRR066767_1.fastq.gz -o trimmed_SRR066767_1.fastq.gz
+fastp -i SRR066767_2.fastq.gz -o trimmed_SRR066767_2.fastq.gz
+
+fastp -i SRR066768_1.fastq.gz -o trimmed_SRR066768_1.fastq.gz
+fastp -i SRR066768_2.fastq.gz -o trimmed_SRR066768_2.fastq.gz
+
+fastp -i SRR066769_1.fastq.gz -o trimmed_SRR066769_1.fastq.gz
+fastp -i SRR066769_2.fastq.gz -o trimmed_SRR066769_2.fastq.gz
+
+Step5: Downloading Reference Genome
+
+wget ftp://ftp.ncbi.nlm.nih.gov/genomes/all/GCF/000/001/635/GCF_000001635.27_GRCm39/GCF_000001635.27_GRCm39_genomic.fna.gz
+
+# unzip ncbi_dataset.zip
+gunzip GCF_000001635.27_GRCm39_genomic.fna.gz
+
+# Build Bowtie2 Index
+bowtie2-build GCF_000001635.27_GRCm39_genomic.fna GRCm39
+
+
+Step6: Alignment using Bowtie2
+
+bowtie2 -x GRCm39 -U trimmed_SRR066766_1.fastq.gz -S SRR066766_mouse.sam
+bowtie2 -x GRCm39 -U trimmed_SRR066767_1.fastq.gz -S SRR066767_mouse.sam
+bowtie2 -x GRCm39 -U trimmed_SRR066768_1.fastq.gz -S SRR066768_mouse.sam
+bowtie2 -x GRCm39 -U trimmed_SRR066769_1.fastq.gz -S SRR066769_mouse.sam
+
+
+Step7: Convert SAM → BAM, Sort 
+conda install -c bioconda samtools 
+samtools view -Sb SRR066766_mouse.sam | samtools sort -o SRR066766_mouse_sorted.bam
+samtools view -Sb SRR066767_mouse.sam | samtools sort -o SRR066767_mouse_sorted.bam
+samtools view -Sb SRR066768_mouse.sam | samtools sort -o SRR066768_mouse_sorted.bam
+samtools view -Sb SRR066769_mouse.sam | samtools sort -o SRR066769_mouse_sorted.bam
+
+Step8:  Remove duplicates
+conda install -c bioconda picard
+
+picard MarkDuplicates \
+I=SRR066766_mouse_sorted.bam \
+O=SRR066766_mouse_dedup.bam \
+M=SRR066766_dup.txt \
+REMOVE_DUPLICATES=true
+
+picard MarkDuplicates \
+I=SRR066767_mouse_sorted.bam \
+O=SRR066767_mouse_dedup.bam \
+M=SRR066767_dup.txt \
+REMOVE_DUPLICATES=true
+
+picard MarkDuplicates \
+I=SRR066768_mouse_sorted.bam \
+O=SRR066768_mouse_dedup.bam \
+M=SRR066768_dup.txt \
+REMOVE_DUPLICATES=true
+
+picard MarkDuplicates \
+I=SRR066769_mouse_sorted.bam \
+O=SRR066769_mouse_dedup.bam \
+M=SRR066769_dup.txt \
+REMOVE_DUPLICATES=true
+
+
+Step9: Peak Calling with MACS2
+
+conda install -c bioconda macs2
+# Replicate 1 (SRR066766 as ChIP, SRR066768 as control/Input)
+macs2 callpeak -t SRR066766_mouse_dedup.bam -c SRR066768_mouse_dedup.bam -f BAM -g mm -n rep1_mouse --outdir macs_out_mouse -q 0.01
+
+# Replicate 2 (SRR066767 as ChIP, SRR066769 as control/Input)
+macs2 callpeak -t SRR066767_mouse_dedup.bam -c SRR066769_mouse_dedup.bam -f BAM -g mm -n rep2_mouse --outdir macs_out_mouse -q 0.01
+
+
+Step10: Peak Overlap & Venn Diagram in R
+
+# Install required packages if missing
+if (!requireNamespace("VennDiagram", quietly = TRUE)) {
+  install.packages("VennDiagram")
+}
+if (!requireNamespace("tidyverse", quietly = TRUE)) {
+  install.packages("tidyverse")
+}
+
+library(VennDiagram)
+library(grid)
+library(tidyverse)
+
+# Set working directory to your ChIP-seq folder
+setwd("~/ChIP-seq")  # <- change path if needed
+
+# Extract chr, start, end from MACS2 peak files
+system("cut -f1-3 macs_out_mouse/rep1_mouse_peaks.narrowPeak > rep1_mouse.bed")
+system("cut -f1-3 macs_out_mouse/rep2_mouse_peaks.narrowPeak > rep2_mouse.bed")
+
+# Find overlapping peaks between replicates
+system("bedtools intersect -a rep1_mouse.bed -b rep2_mouse.bed > rep1_rep2_mouse_overlap.bed")
+
+# Count peaks
+rep1_total <- as.numeric(system("wc -l < rep1_mouse.bed", intern = TRUE))
+rep2_total <- as.numeric(system("wc -l < rep2_mouse.bed", intern = TRUE))
+overlap <- as.numeric(system("wc -l < rep1_rep2_mouse_overlap.bed", intern = TRUE))
+
+# Draw Venn diagram
+venn.plot <- draw.pairwise.venn(
+  area1 = rep1_total,
+  area2 = rep2_total,
+  cross.area = overlap,
+  category = c("SRR066766_mouse", "SRR066767_mouse"),
+  fill = c("skyblue", "pink"),
+  lty = "blank",
+  cex = 2,
+  cat.cex = 2,
+  cat.pos = c(-20, 20)
+)
+
+# Save output image in ChIP-seq folder
+png("chipseq_mouse_venn.png", width = 800, height = 800)
+grid.draw(venn.plot)
+dev.off()
+
+cat("Venn diagram saved as ~/ChIP-seq/chipseq_mouse_venn.png\n")
